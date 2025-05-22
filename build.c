@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <dirent.h>
 #include <stdlib.h>
-#include <errno.h>
+//#include <errno.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -18,6 +18,16 @@
 // if the hash is different a file was deleted
 // if it matches then it was modified
 
+typedef struct{
+	const char** src_files;
+	const char** include_dirs;
+	const char** lib_files;
+	const char** libraries;
+	const char* output_name;
+	const char* extra_flags;
+	bool is_shared_lib;
+} BuildConfig;
+
 long time_stamps[512];
 long hashes[512];
 struct stat buff;
@@ -25,6 +35,7 @@ int file_changed = 0;
 char name[512];
 pid_t game_pid = -1;
 int current_file_index = 0;
+bool main_app_built = false;
 
 const char* ignore_watch_dirs[] = {
 	".git",
@@ -33,9 +44,15 @@ const char* ignore_watch_dirs[] = {
 	NULL
 };
 
-const char* src_files[] = {
+const char* main_src_files[] = {
     "main.c",
     NULL
+};
+
+const char* engine_src_files[] = {
+	"engine.c",
+	"libs/glad/glad.c",
+	NULL
 };
 
 const char* include_dirs[] = {
@@ -43,7 +60,13 @@ const char* include_dirs[] = {
 	NULL
 };
 
-const char* lib_dirs[] = {
+const char* engine_include_dirs[] = {
+	"libs/SDL3/include",
+	"libs/glad",
+	NULL
+};
+
+const char* lib_files[] = {
 	"libs/SDL3/lib/libSDL3.a",
 	NULL
 };
@@ -54,6 +77,11 @@ const char*	libraries[] = {
     "xkbcommon", "decor-0",
     "asound", "pulse", "udev", "drm", "gbm", "EGL", "GL",
     "X11", "Xext", "Xrandr", "Xi", "Xfixes", "Xcursor", "Xss",
+	NULL
+};
+
+const char* engine_libraries[] = {
+	"GL", "m",
 	NULL
 };
 
@@ -112,6 +140,42 @@ void concat_list(char* compile_cmd, char* prefix,const char** list) {
 	}
 }
 
+bool build_targe(const BuildConfig* config) {
+	char compile_cmd[2048] = "gcc -std=c99 -Wall -Wextra -g -O0";
+
+	if(config->is_shared_lib) {
+		strcat(compile_cmd, " -fPIC -shared");
+	}
+
+	if(config->extra_flags) {
+		strcat(compile_cmd, " ");
+		strcat(compile_cmd, config->extra_flags);
+	}
+
+	strcat(compile_cmd, " -o ");
+	strcat(compile_cmd, config->output_name);
+
+	concat_list(compile_cmd, " ", config->src_files);
+	concat_list(compile_cmd, "-I", config->include_dirs);
+
+	if(config->lib_files) {
+		concat_list(compile_cmd, " ", config->lib_files);
+	}
+
+	concat_list(compile_cmd, " -l", config->libraries);
+	
+	printf("Building: %s\n",compile_cmd);
+	int result = system(compile_cmd);
+
+	if(result == 0) {
+        printf("✓ %s built successfully\n", config->output_name);
+        return true;
+    } else {
+        printf("✗ %s build failed\n", config->output_name);
+        return false;
+    }
+}
+
 void kill_game_process() {
 	if(game_pid > 0) {
         printf("Killing process %d...\n", game_pid);
@@ -138,15 +202,62 @@ void kill_game_process() {
 	}
 }
 
+void start_main_app() {
+	printf("Starting hot reload engine\n");
+	game_pid = fork();
+	if(game_pid == 0) {
+		execl("./hot_reload_engine", "./hot_reload_engine", NULL);
+        perror("Failed to start hot reload engine");
+        exit(1);
+    } else if(game_pid < 0) {
+        perror("Failed to fork");
+        game_pid = -1;
+    } else {
+        printf("Started with PID %d\n", game_pid);
+    }
+}
+bool build_main_app() {
+	BuildConfig main_config = {
+		.src_files = main_src_files,
+		.include_dirs = include_dirs,
+		.lib_files = lib_files,
+		.libraries = libraries,
+		.output_name = "hot_reload_engine",
+		.extra_flags = NULL,
+		.is_shared_lib = false
+	};
+
+	return build_targe(&main_config);
+}
+
+bool build_engine() {
+	BuildConfig main_config = {
+		.src_files = engine_src_files,
+		.include_dirs = engine_include_dirs,
+		.lib_files = NULL,
+		.libraries = engine_libraries,
+		.output_name = "libengine.so",
+		.extra_flags = NULL,
+		.is_shared_lib = true
+	};
+
+	return build_targe(&main_config);
+}
+
 int main() {
+	if(!build_main_app()) {
+		printf("Failed to build main application.\n");
+		return 1;
+	}
+	main_app_built = true;
 
-	char compile_cmd[1024] = "gcc -o sdlengine";
-    concat_list(compile_cmd, "", src_files);
-	concat_list(compile_cmd, "-I", include_dirs);
-	concat_list(compile_cmd, "", lib_dirs);
-	concat_list(compile_cmd, "-l",libraries);
+	if(!build_engine()){
+		printf("Failed to build engine library.\n");
+		return 1;
+	}
 
-	printf("compile command: %s\n", compile_cmd);
+	start_main_app();
+	
 	while(true) {
 		file_changed = 0;
 		current_file_index = 0;
@@ -156,23 +267,26 @@ int main() {
 		if(file_changed) {
 			char *time_str = ctime(&buff.st_mtime);
 			time_str[strlen(time_str) - 1] = '\0';
-			printf("changed %s %s\n",time_str, name);
+			printf("\n=== File changed: %s at %s ===\n", name, time_str);
 
-			kill_game_process();
-			int result = system(compile_cmd);
-			if (result==0) {
-				game_pid = fork();
-				if(game_pid==0) {
-					execl("./sdlengine", "./sdlengine",NULL);
-					perror("Failed to start server");
-				} else if(game_pid < 0) {
-					perror("Failed to fork server");
+			if(strstr(name,"main.c") != NULL){
+				kill_game_process();
+				if(build_main_app()) {
+					build_engine();
+					start_main_app();
+				} else {
+					printf("Main app build failed, not restarting\n");
 				}
-			}
-			else {
-				puts("build failed");
+			} else if (strstr(name, "engine.c") != NULL) {
+				printf("Engine source changed, rebuilding library for hot reload...\n");
+				if(build_main_app()) {
+					printf("Engine rebuilt! Hot reload should happen automatically.\n");
+				} else {
+					printf("Main app build failed, not restarting\n");
+				}
 			}
 		}
 		usleep(10000);
 	}
+	return 0;
 }
