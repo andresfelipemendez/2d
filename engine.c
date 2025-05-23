@@ -1,293 +1,282 @@
-#include <SDL3/SDL.h>
-#include <glad.h>
-#include <SDL3/SDL_opengl.h>
 #include <stdio.h>
-#include <stdbool.h>
-#include <math.h>
 #include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <stdbool.h>
 
-//
+// Forward declarations for OpenGL types to avoid including GLAD
+typedef unsigned int GLuint;
+typedef int GLint;
+typedef int GLsizei;
+typedef unsigned int GLenum;
+typedef float GLfloat;
+typedef unsigned char GLboolean;
+typedef void GLvoid;
 
-typedef struct{
-    float rotation;
-    float color_time;
-    int triangle_count;
-    bool wireframe_mode;
-    float scale;
+// SDL types we need
+typedef struct SDL_Window SDL_Window;
+typedef void* SDL_GLContext;
+typedef unsigned char Uint8;
+typedef unsigned int Uint32;
 
-    GLuint vao;
-    GLuint vbo;
-    GLuint shader_program;
+// Engine state structure (must match the one in main.c)
+typedef struct {
+    void* persistent_memory;
+    size_t persistent_memory_size;
+    void* frame_memory;
+    size_t frame_memory_size;
+    SDL_Window* window;
+    SDL_GLContext gl_context;
+    unsigned int basic_shader_program;
+    float delta_time;
+    float total_time;
+    const Uint8* keyboard_state;
+    int mouse_x, mouse_y;
+    Uint32 mouse_buttons;
+    int window_width;
+    int window_height;
+    bool should_quit;
+    bool is_reloaded;
 } EngineState;
 
-static EngineState* g_engine_state = NULL;
+// Import the OpenGL functions we need from the main executable
+extern void glGenVertexArrays(GLsizei n, GLuint *arrays);
+extern void glGenBuffers(GLsizei n, GLuint *buffers);
+extern void glBindVertexArray(GLuint array);
+extern void glBindBuffer(GLenum target, GLuint buffer);
+extern void glBufferData(GLenum target, GLsizei size, const GLvoid *data, GLenum usage);
+extern void glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const GLvoid *pointer);
+extern void glEnableVertexAttribArray(GLuint index);
+extern void glUseProgram(GLuint program);
+extern GLint glGetUniformLocation(GLuint program, const char *name);
+extern void glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value);
+extern void glDrawArrays(GLenum mode, GLint first, GLsizei count);
+extern void glDeleteVertexArrays(GLsizei n, const GLuint *arrays);
+extern void glDeleteBuffers(GLsizei n, const GLuint *buffers);
 
-// Simple vertex shader
-const char* vertex_shader_source = 
-    "#version 330 core\n"
-    "layout (location = 0) in vec3 aPos;\n"
-    "uniform float u_rotation;\n"
-    "uniform float u_scale;\n"
-    "void main() {\n"
-    "    float c = cos(u_rotation);\n"
-    "    float s = sin(u_rotation);\n"
-    "    mat2 rot = mat2(c, -s, s, c);\n"
-    "    vec2 rotated = rot * aPos.xy * u_scale;\n"
-    "    gl_Position = vec4(rotated, aPos.z, 1.0);\n"
-    "}\n";
+// OpenGL constants we need
+#define GL_ARRAY_BUFFER          0x8892
+#define GL_STATIC_DRAW           0x88E4
+#define GL_FLOAT                 0x1406
+#define GL_FALSE                 0
+#define GL_TRIANGLES             0x0004
 
-// Simple fragment shader with animated color
-const char* fragment_shader_source = 
-    "#version 330 core\n"
-    "out vec4 FragColor;\n"
-    "uniform float u_time;\n"
-    "void main() {\n"
-    "    vec3 color = vec3(\n"
-    "        sin(u_time) * 0.5 + 0.5,\n"
-    "        sin(u_time + 2.0) * 0.5 + 0.5,\n"
-    "        sin(u_time + 4.0) * 0.5 + 0.5\n"
-    "    );\n"
-    "    FragColor = vec4(color, 1.0);\n"
-    "}\n";
+// SDL scancodes we need
+#define SDL_SCANCODE_W 26
+#define SDL_SCANCODE_A 4
+#define SDL_SCANCODE_S 22
+#define SDL_SCANCODE_D 7
+#define SDL_SCANCODE_Q 20
+#define SDL_SCANCODE_E 8
+#define SDL_SCANCODE_R 21
+#define SDL_SCANCODE_ESCAPE 41
 
-GLuint compile_shader(GLenum type, const char* source) {
-    GLuint shader = glCreateShader(type);
-    glShaderSource(shader, 1, &source, NULL);
-    glCompileShader(shader);
-    
-    int success;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-    if (!success) {
-        char info_log[512];
-        glGetShaderInfoLog(shader, 512, NULL, info_log);
-        printf("Shader compilation failed: %s\n", info_log);
-        return 0;
-    }
-    
-    return shader;
+// Game state that persists across reloads
+typedef struct {
+    bool initialized;
+    float player_x, player_y;
+    float player_rotation;
+    float player_speed;
+    unsigned int vao, vbo;
+    int reload_count;
+    float color_r, color_g, color_b;
+} GameState;
+
+// Simple matrix operations
+typedef struct {
+    float m[16];
+} Mat4;
+
+static Mat4 mat4_identity() {
+    Mat4 result = {0};
+    result.m[0] = result.m[5] = result.m[10] = result.m[15] = 1.0f;
+    return result;
 }
 
-GLuint create_shader_program() {
-    GLuint vertex_shader = compile_shader(GL_VERTEX_SHADER, vertex_shader_source);
-    GLuint fragment_shader = compile_shader(GL_FRAGMENT_SHADER, fragment_shader_source);
-    
-    if (!vertex_shader || !fragment_shader) {
-        return 0;
-    }
-    
-    GLuint program = glCreateProgram();
-    glAttachShader(program, vertex_shader);
-    glAttachShader(program, fragment_shader);
-    glLinkProgram(program);
-    
-    int success;
-    glGetProgramiv(program, GL_LINK_STATUS, &success);
-    if (!success) {
-        char info_log[512];
-        glGetProgramInfoLog(program, 512, NULL, info_log);
-        printf("Shader program linking failed: %s\n", info_log);
-        return 0;
-    }
-    
-    glDeleteShader(vertex_shader);
-    glDeleteShader(fragment_shader);
-    
-    return program;
+static Mat4 mat4_translate(float x, float y, float z) {
+    Mat4 result = mat4_identity();
+    result.m[12] = x;
+    result.m[13] = y;
+    result.m[14] = z;
+    return result;
 }
 
-void setup_triangle_geometry(EngineState* state) {
-    // Triangle vertices
-    float vertices[] = {
-        -0.5f, -0.5f, 0.0f,
-         0.5f,-0.5f, 0.0f,
-         0.0f,  0.5f, 0.0f
-    };
-    
-    glGenVertexArrays(1, &state->vao);
-    glGenBuffers(1, &state->vbo);
-    
-    glBindVertexArray(state->vao);
-    glBindBuffer(GL_ARRAY_BUFFER, state->vbo);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-    
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindVertexArray(0);
+static Mat4 mat4_scale(float x, float y, float z) {
+    Mat4 result = mat4_identity();
+    result.m[0] = x;
+    result.m[5] = y;
+    result.m[10] = z;
+    return result;
 }
 
-bool engine_init(int width, int height) {
-    printf("Engine initializing... (width: %d, height: %d)\n", width, height);
-    
-    // Allocate engine state
-    g_engine_state = malloc(sizeof(EngineState));
-    if (!g_engine_state) {
-        return false;
-    }
-    
-    // Initialize state
-    g_engine_state->rotation = 0.0f;
-    g_engine_state->color_time = 0.0f;
-    g_engine_state->triangle_count = 1;
-    g_engine_state->wireframe_mode = false;
-    g_engine_state->scale = 1.0f;
-    
-    // Set viewport
-    glViewport(0, 0, width, height);
-    
-    // Create shader program
-    g_engine_state->shader_program = create_shader_program();
-    if (!g_engine_state->shader_program) {
-        free(g_engine_state);
-        g_engine_state = NULL;
-        return false;
-    }
-    
-    // Setup geometry
-    setup_triangle_geometry(g_engine_state);
-    
-    // Enable some OpenGL features
-    glEnable(GL_DEPTH_TEST);
-    
-    printf("Engine initialized successfully!\n");
-    printf("Try modifying this message and recompiling to see hot reload!\n");
-    
-    return true;
+static Mat4 mat4_rotate_z(float angle) {
+    Mat4 result = mat4_identity();
+    float c = cosf(angle);
+    float s = sinf(angle);
+    result.m[0] = c;
+    result.m[1] = s;
+    result.m[4] = -s;
+    result.m[5] = c;
+    return result;
 }
 
-void engine_update(float delta_time) {
-    if (!g_engine_state) return;
-    
-    // Update rotation - change this value to see immediate effect!
-    g_engine_state->rotation += delta_time * 1.5f; // Try changing this speed!
-    
-    // Update color animation time
-    g_engine_state->color_time += delta_time * 2.0f; // Try changing this too!
-    
-    // Pulsing scale effect - modify this for different effects!
-    g_engine_state->scale = 0.5f + 0.3f * sin(g_engine_state->color_time * 0.5f);
-}
-
-
-void engine_render(void) {
-    if (!g_engine_state) return;
-    
-    // Clear with a dark background - try changing this color!
-    glClearColor(0.1f, 0.1f, 0.2f, 1.0f); // Try: (0.2f, 0.1f, 0.1f, 1.0f) for red tint
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    
-    // Use shader program
-    glUseProgram(g_engine_state->shader_program);
-    
-    // Set uniforms
-    GLint rotation_loc = glGetUniformLocation(g_engine_state->shader_program, "u_rotation");
-    GLint time_loc = glGetUniformLocation(g_engine_state->shader_program, "u_time");
-    GLint scale_loc = glGetUniformLocation(g_engine_state->shader_program, "u_scale");
-    
-    glUniform1f(rotation_loc, g_engine_state->rotation);
-    glUniform1f(time_loc, g_engine_state->color_time);
-    glUniform1f(scale_loc, g_engine_state->scale);
-    
-    // Set wireframe mode if enabled
-    if (g_engine_state->wireframe_mode) {
-        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-    } else {
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-    }
-    
-    // Draw triangle(s) - try increasing triangle_count for multiple triangles!
-    glBindVertexArray(g_engine_state->vao);
-    for (int i = 0; i < g_engine_state->triangle_count; i++) {
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-    }
-    glBindVertexArray(0);
-}
-
-void engine_cleanup(void) {
-    if (!g_engine_state) return;
-    
-    printf("Engine cleanup\n");
-    
-    // Cleanup OpenGL objects
-    if (g_engine_state->vao) {
-        glDeleteVertexArrays(1, &g_engine_state->vao);
-    }
-    if (g_engine_state->vbo) {
-        glDeleteBuffers(1, &g_engine_state->vbo);
-    }
-    if (g_engine_state->shader_program) {
-        glDeleteProgram(g_engine_state->shader_program);
-    }
-    
-    free(g_engine_state);
-    g_engine_state = NULL;
-}
-
-bool engine_handle_event(SDL_Event* event) {
-    if (!g_engine_state) return false;
-    
-    if (event->type == SDL_EVENT_KEY_DOWN) {
-        switch (event->key.key) {
-            case SDLK_SPACE:
-                g_engine_state->wireframe_mode = !g_engine_state->wireframe_mode;
-                printf("Wireframe mode: %s\n", g_engine_state->wireframe_mode ? "ON" : "OFF");
-                return true;
-                
-            case SDLK_UP:
-                g_engine_state->triangle_count++;
-                printf("Triangle count: %d\n", g_engine_state->triangle_count);
-                return true;
-                
-            case SDLK_DOWN:
-                if (g_engine_state->triangle_count > 1) {
-                    g_engine_state->triangle_count--;
-                    printf("Triangle count: %d\n", g_engine_state->triangle_count);
-                }
-                return true;
+static Mat4 mat4_multiply(Mat4 a, Mat4 b) {
+    Mat4 result = {0};
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            for (int k = 0; k < 4; k++) {
+                result.m[i * 4 + j] += a.m[i * 4 + k] * b.m[k * 4 + j];
+            }
         }
     }
-    
-    return false; // Event not handled
+    return result;
 }
 
-// Hot reload support
-void engine_on_reload(void* old_state) {
-    if (old_state) {
-        // Transfer state from old instance
-        EngineState* old = (EngineState*)old_state;
-        
-        printf("Hot reload: Transferring state (rotation: %.2f)\n", old->rotation);
-        
-        // Copy old state to new instance
-        if (g_engine_state) {
-            g_engine_state->rotation = old->rotation;
-            g_engine_state->color_time = old->color_time;
-            g_engine_state->triangle_count = old->triangle_count;
-            g_engine_state->wireframe_mode = old->wireframe_mode;
-            g_engine_state->scale = old->scale;
+// Export these functions for the main program to call
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+void engine_init(EngineState* state) {
+    printf("Engine init called\n");
+    
+    // Get or initialize game state from persistent memory
+    GameState* game = (GameState*)state->persistent_memory;
+    
+    if (!game->initialized || state->is_reloaded) {
+        if (state->is_reloaded) {
+            game->reload_count++;
+            printf("Engine reloaded %d times\n", game->reload_count);
+            
+            // Change color on reload to show it's working
+            game->color_r = (float)rand() / RAND_MAX;
+            game->color_g = (float)rand() / RAND_MAX;
+            game->color_b = (float)rand() / RAND_MAX;
+        } else {
+            // First time initialization
+            game->initialized = true;
+            game->player_x = 0.0f;
+            game->player_y = 0.0f;
+            game->player_rotation = 0.0f;
+            game->player_speed = 200.0f;
+            game->reload_count = 0;
+            game->color_r = 1.0f;
+            game->color_g = 0.5f;
+            game->color_b = 0.0f;
         }
         
-        free(old_state);
+        // Create a triangle
+        float vertices[] = {
+            // positions         // colors
+            -0.7f, -0.5f, 0.0f,  1.0f, 0.0f, 0.0f,
+             0.5f, -0.5f, 0.0f,  0.0f, 1.0f, 0.0f,
+             0.1f,  0.5f, 0.0f,  0.0f, 0.0f, 1.0f
+        };
+        
+        // Generate vertex array and buffer
+        glGenVertexArrays(1, &game->vao);
+        glGenBuffers(1, &game->vbo);
+        
+        glBindVertexArray(game->vao);
+        
+        glBindBuffer(GL_ARRAY_BUFFER, game->vbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+        
+        // Position attribute
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+        
+        // Color attribute
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+        glEnableVertexAttribArray(1);
+        
+        glBindVertexArray(0);
     }
-    
-    printf("=== HOT RELOAD COMPLETE ===\n");
-    printf("Try modifying render colors, rotation speed, or add new features!\n");
-    printf("Controls: SPACE=wireframe, UP/DOWN=triangle count\n");
 }
 
-void* engine_get_state(void) {
-    if (!g_engine_state) return NULL;
+void engine_update(EngineState* state) {
+    GameState* game = (GameState*)state->persistent_memory;
     
-    // Create a copy of current state for transfer
-    EngineState* state_copy = malloc(sizeof(EngineState));
-    if (state_copy) {
-        *state_copy = *g_engine_state;
-        // Don't copy OpenGL objects - they'll be recreated
-        state_copy->vao = 0;
-        state_copy->vbo = 0;
-        state_copy->shader_program = 0;
+    // Handle input
+    if (state->keyboard_state[SDL_SCANCODE_W]) {
+        game->player_y += game->player_speed * state->delta_time;
+    }
+    if (state->keyboard_state[SDL_SCANCODE_S]) {
+        game->player_y -= game->player_speed * state->delta_time;
+    }
+    if (state->keyboard_state[SDL_SCANCODE_A]) {
+        game->player_x -= game->player_speed * state->delta_time;
+    }
+    if (state->keyboard_state[SDL_SCANCODE_D]) {
+        game->player_x += game->player_speed * state->delta_time;
+    }
+    if (state->keyboard_state[SDL_SCANCODE_Q]) {
+        game->player_rotation += 2.0f * state->delta_time;
+    }
+    if (state->keyboard_state[SDL_SCANCODE_E]) {
+        game->player_rotation -= 2.0f * state->delta_time;
     }
     
-    return state_copy;
+    // Reset position with R
+    if (state->keyboard_state[SDL_SCANCODE_R]) {
+        game->player_x = 0.0f;
+        game->player_y = 0.0f;
+        game->player_rotation = 0.0f;
+    }
+    
+    // Quit with ESC
+    if (state->keyboard_state[SDL_SCANCODE_ESCAPE]) {
+        state->should_quit = true;
+    }
 }
+
+void engine_render(EngineState* state) {
+    GameState* game = (GameState*)state->persistent_memory;
+    
+    // Use the shader program compiled in main.c
+    glUseProgram(state->basic_shader_program);
+    
+    // Calculate aspect ratio
+    float aspect = (float)state->window_width / state->window_height;
+    
+    // Create transformation matrix
+    Mat4 scale = mat4_scale(0.5f / aspect, 0.5f, 1.0f);
+    Mat4 rotate = mat4_rotate_z(game->player_rotation);
+    Mat4 translate = mat4_translate(game->player_x / 400.0f, game->player_y / 300.0f, 0.0f);
+    
+    Mat4 transform = mat4_multiply(translate, mat4_multiply(rotate, scale));
+    
+    // Set transform uniform
+    int transform_loc = glGetUniformLocation(state->basic_shader_program, "transform");
+    glUniformMatrix4fv(transform_loc, 1, GL_FALSE, transform.m);
+    
+    glBindVertexArray(game->vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    
+    // Draw some text info (would need text rendering in real app)
+    if (state->is_reloaded) {
+        printf("Reloaded! Position: (%.2f, %.2f), Rotation: %.2f, Reloads: %d\n", 
+               game->player_x, game->player_y, game->player_rotation, game->reload_count);
+    }
+}
+
+void engine_cleanup(EngineState* state) {
+    printf("Engine cleanup called\n");
+    
+    GameState* game = (GameState*)state->persistent_memory;
+    
+    // Clean up OpenGL resources
+    if (game->vao) {
+        glDeleteVertexArrays(1, &game->vao);
+        game->vao = 0;
+    }
+    if (game->vbo) {
+        glDeleteBuffers(1, &game->vbo);
+        game->vbo = 0;
+    }
+}
+
+#ifdef __cplusplus
+}
+#endif

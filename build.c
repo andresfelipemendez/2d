@@ -13,6 +13,7 @@
 #include <stdbool.h>
 #include <signal.h>
 
+#include "platform.h"
 // keep two arrays, one of time stamps one of hash values
 // if time stamps differ then compare the hashed value
 // if the hash is different a file was deleted
@@ -27,6 +28,12 @@ typedef struct{
 	const char* extra_flags;
 	bool is_shared_lib;
 } BuildConfig;
+
+typedef struct {
+	const char** lib_files;
+	const char** libraries;
+	const char* extra_flags;
+} PlatformConfig;
 
 long time_stamps[512];
 long hashes[512];
@@ -46,17 +53,18 @@ const char* ignore_watch_dirs[] = {
 
 const char* main_src_files[] = {
     "main.c",
+	"libs/glad/glad.c",
     NULL
 };
 
 const char* engine_src_files[] = {
 	"engine.c",
-	"libs/glad/glad.c",
 	NULL
 };
 
-const char* include_dirs[] = {
+const char* main_include_dirs[] = {
 	"libs/SDL3/include",
+	"libs/glad",
 	NULL
 };
 
@@ -66,12 +74,12 @@ const char* engine_include_dirs[] = {
 	NULL
 };
 
-const char* lib_files[] = {
-	"libs/SDL3/lib/libSDL3.a",
+const char* linux_lib_files[] = {
+	"libs/SDL3/lib/linux_x64/libSDL3.a",
 	NULL
 };
 
-const char*	libraries[] = {
+const char*	linux_libraries[] = {
 	"m", "dl", "pthread",
     "wayland-client", "wayland-cursor", "wayland-egl",
     "xkbcommon", "decor-0",
@@ -80,10 +88,41 @@ const char*	libraries[] = {
 	NULL
 };
 
+
+const char* mac_arm_lib_files[] = {
+	"libs/SDL3/lib/osx_arm64/libSDL3.a",
+	NULL
+};
+
+const char* mac_arm_libraries[] = {
+		"m", "pthread",
+		NULL
+};
+
+const char* mac_frameworks[] = {
+	"Cocoa", "IOKit", "CoreVideo", "CoreAudio",
+	"AudioToolbox", "Carbon", "ForceFeedback",
+	"GameController", "Metal", "OpenGL",
+	"AVFoundation", "CoreMedia", "CoreHaptics",
+	"UniformTypeIdentifiers", "QuartzCore",
+	NULL
+};
+
 const char* engine_libraries[] = {
 	"GL", "m",
 	NULL
 };
+
+const char* mac_engine_libraries[] = {
+	"m",
+	NULL
+};
+
+const char* mac_engine_frameworks[] = {
+	"OpenGL",
+	NULL
+};
+
 
 /*	
 int hash (char*) {
@@ -140,11 +179,40 @@ void concat_list(char* compile_cmd, char* prefix,const char** list) {
 	}
 }
 
+PlatformConfig get_platform_config() {
+	PlatformConfig config = {0};
+
+#if defined (PLATFORM_LINUX_X64)
+	config.lib_files = linux_lib_files;
+	config.libraries = linux_libraries;
+	config.extra_flags = "-Wl,-rpath,'$ORIGIN'";
+#elif defined (PLATFORM_MAC_ARM)
+	config.lib_files = mac_arm_lib_files;
+	config.libraries = mac_arm_libraries;
+	config.extra_flags = "-arch arm64 -mmacosx-version-min=15.0";
+#else
+#error "Unsupported platform"
+#endif
+	return config;
+}
+
 bool build_targe(const BuildConfig* config) {
-	char compile_cmd[2048] = "gcc -std=c99 -Wall -Wextra -g -O0";
+	char compile_cmd[2048] ="";
+
+#if defined (PLATFORM_MAC)
+	strcat(compile_cmd, "clang");
+#else
+	strcat(compile_cmd, "gcc");
+#endif
+
+	strcat(compile_cmd," -std=c99 -Wall -Wextra -g -O0");
 
 	if(config->is_shared_lib) {
+#if defined(PLATFORM_MAC)
+		strcat(compile_cmd, " -dynamiclib");
+#else
 		strcat(compile_cmd, " -fPIC -shared");
+#endif
 	}
 
 	if(config->extra_flags) {
@@ -161,6 +229,14 @@ bool build_targe(const BuildConfig* config) {
 	if(config->lib_files) {
 		concat_list(compile_cmd, " ", config->lib_files);
 	}
+
+#if defined (PLATFORM_MAC)
+	if(!config->is_shared_lib) {
+		concat_list(compile_cmd, "-framework ", mac_frameworks);
+	} else {
+		concat_list(compile_cmd, "-framework ", mac_engine_frameworks);
+	}
+#endif
 
 	concat_list(compile_cmd, " -l", config->libraries);
 	
@@ -217,13 +293,15 @@ void start_main_app() {
     }
 }
 bool build_main_app() {
+	PlatformConfig platform = get_platform_config();
+
 	BuildConfig main_config = {
 		.src_files = main_src_files,
-		.include_dirs = include_dirs,
-		.lib_files = lib_files,
-		.libraries = libraries,
+		.include_dirs = main_include_dirs,
+		.lib_files = platform.lib_files,
+		.libraries = platform.libraries,
 		.output_name = "hot_reload_engine",
-		.extra_flags = NULL,
+		.extra_flags = platform.extra_flags,
 		.is_shared_lib = false
 	};
 
@@ -231,20 +309,50 @@ bool build_main_app() {
 }
 
 bool build_engine() {
-	BuildConfig main_config = {
+	const char* output_name;
+	const char* extra_flags = NULL;
+	const char** libraries;
+
+#if defined(PLATFORM_MAC)
+	output_name = "libengine.dylib";
+	extra_flags = "-install_name @rpath/libengine.dylib -undefined dynamic_lookup";
+	libraries = mac_engine_libraries;
+#else
+	output_name = "libengine.so";
+	libraries = engine_libraries;
+#endif
+	BuildConfig engine_config = {
 		.src_files = engine_src_files,
 		.include_dirs = engine_include_dirs,
 		.lib_files = NULL,
-		.libraries = engine_libraries,
-		.output_name = "libengine.so",
-		.extra_flags = NULL,
+		.libraries = libraries,
+		.output_name = output_name,
+		.extra_flags = extra_flags,
 		.is_shared_lib = true
 	};
 
-	return build_targe(&main_config);
+	return build_targe(&engine_config);
+}
+
+void print_platform_info() {
+	printf("=== Platform Information ===\n");
+	#if defined(PLATFORM_MAC_ARM)
+	printf("Platform: macOS ARM64 (Apple Silicon)\n");
+	#elif defined(PLATFORM_MAC_X64)
+	printf("Platform: macOS x86_64\n");
+	#elif defined(PLATFORM_LINUX_X64)
+	printf("Platform: Linux x86_64\n");
+	#elif defined(PLATFORM_LINUX_ARM)
+	printf("Platform: Linux ARM64\n");
+	#else
+	printf("Platform: Unknown\n");
+	#endif
+	printf("===========================\n\n");
 }
 
 int main() {
+	print_platform_info();
+
 	if(!build_main_app()) {
 		printf("Failed to build main application.\n");
 		return 1;
@@ -279,7 +387,7 @@ int main() {
 				}
 			} else if (strstr(name, "engine.c") != NULL) {
 				printf("Engine source changed, rebuilding library for hot reload...\n");
-				if(build_main_app()) {
+				if(build_engine()) {
 					printf("Engine rebuilt! Hot reload should happen automatically.\n");
 				} else {
 					printf("Main app build failed, not restarting\n");
