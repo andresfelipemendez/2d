@@ -132,11 +132,6 @@ static Mat4 mat4_multiply(Mat4 a, Mat4 b) {
     return result;
 }
 
-// Export these functions for the main program to call
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 void engine_init(EngineState* state) {
     printf("Engine init called\n");
     
@@ -168,7 +163,7 @@ void engine_init(EngineState* state) {
         // Create a triangle
         float vertices[] = {
             // positions         // colors
-            -0.7f, -0.5f, 0.0f,  1.0f, 0.0f, 0.0f,
+            -0.5f, -0.5f, 0.0f,  1.0f, 0.0f, 0.0f,
              0.5f, -0.5f, 0.0f,  0.0f, 1.0f, 0.0f,
              0.1f,  0.5f, 0.0f,  0.0f, 0.0f, 1.0f
         };
@@ -276,7 +271,3 @@ void engine_cleanup(EngineState* state) {
         game->vbo = 0;
     }
 }
-
-#ifdef __cplusplus
-}
-#endif
