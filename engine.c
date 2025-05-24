@@ -3,7 +3,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdbool.h>
-
+#include "GameState.h"
 // Forward declarations for OpenGL types to avoid including GLAD
 typedef unsigned int GLuint;
 typedef int GLint;
@@ -72,15 +72,7 @@ extern void glDeleteBuffers(GLsizei n, const GLuint *buffers);
 #define SDL_SCANCODE_ESCAPE 41
 
 // Game state that persists across reloads
-typedef struct {
-    bool initialized;
-    float player_x, player_y;
-    float player_rotation;
-    float player_speed;
-    unsigned int vao, vbo;
-    int reload_count;
-    float color_r, color_g, color_b;
-} GameState;
+
 
 // Simple matrix operations
 typedef struct {
@@ -142,7 +134,7 @@ void engine_init(EngineState* state) {
         if (state->is_reloaded) {
             game->reload_count++;
             printf("Engine reloaded %d times\n", game->reload_count);
-            
+            printf("calling rand colors\n");
             // Change color on reload to show it's working
             game->color_r = (float)rand() / RAND_MAX;
             game->color_g = (float)rand() / RAND_MAX;
@@ -163,7 +155,7 @@ void engine_init(EngineState* state) {
         // Create a triangle
         float vertices[] = {
             // positions         // colors
-            -0.5f, -0.5f, 0.0f,  1.0f, 0.0f, 0.0f,
+            -0.7f, -0.5f, 0.0f,  1.0f, 0.0f, 0.0f,
              0.5f, -0.5f, 0.0f,  0.0f, 1.0f, 0.0f,
              0.1f,  0.5f, 0.0f,  0.0f, 0.0f, 1.0f
         };

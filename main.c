@@ -7,11 +7,13 @@
 #include <string.h>
 #include <signal.h>
 #include <execinfo.h>
+#include <time.h>
 
 #include <SDL3/SDL.h>
 #include <glad.h>
 
 #include "platform.h"
+#include "GameState.h"
 
 // Signal handler for debugging
 void signal_handler(int sig) {
@@ -49,8 +51,8 @@ typedef struct {
     float total_time;
     
     // Input state
-    const Uint8* keyboard_state;
-    int mouse_x, mouse_y;
+    const bool* keyboard_state;
+    float mouse_x, mouse_y;
     Uint32 mouse_buttons;
     
     // Window dimensions
@@ -357,7 +359,7 @@ int main(int argc, char* argv[]) {
             unload_engine_library(&engine);
             
             // Wait a bit for file write to complete
-            usleep(100000); // 100ms
+            sleep(1); // 100ms
             
             // Load new library
             if (load_engine_library(&engine, lib_name, temp_lib_name)) {
@@ -399,7 +401,9 @@ int main(int argc, char* argv[]) {
         engine.update(&engine_state);
         
         // Clear screen
-        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        GameState* game = (GameState*)engine_state.persistent_memory;
+
+        glClearColor(game->color_r, game->color_g, game->color_b, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         
         // Render engine
